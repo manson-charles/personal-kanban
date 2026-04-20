@@ -1,0 +1,270 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users & Auth ────────────────────────────────────────────
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  name          String
+  passwordHash  String?
+  avatar        String?
+  githubId      String?        @unique
+  googleId      String?        @unique
+  mfaEnabled    Boolean        @default(false)
+  mfaSecret     String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  subscription  Subscription?
+  ownedProjects Project[]      @relation("ProjectOwner")
+  memberships   ProjectMember[]
+  apiKeys       ApiKey[]
+
+  @@map("users")
+}
+
+model ApiKey {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  keyHash   String   @unique
+  lastUsed  DateTime?
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+// ─── Projects ────────────────────────────────────────────────
+
+model Project {
+  id          String          @id @default(uuid())
+  name        String
+  description String          @default("")
+  ownerId     String
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  owner        User             @relation("ProjectOwner", fields: [ownerId], references: [id])
+  members      ProjectMember[]
+  bots         Bot[]
+  environments Environment[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String   @id @default(uuid())
+  projectId String
+  userId    String
+  role      String   @default("viewer") // owner, editor, viewer
+  joinedAt  DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+// ─── Bots ────────────────────────────────────────────────────
+
+model Bot {
+  id          String   @id @default(uuid())
+  projectId   String
+  name        String
+  description String   @default("")
+  status      String   @default("draft") // draft, active, paused, error, archived
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project   Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  channels  BotChannel[]
+  workflows Workflow[]
+  apiRoutes ApiRoute[]
+
+  @@map("bots")
+}
+
+model BotChannel {
+  id          String   @id @default(uuid())
+  botId       String
+  channelType String   // telegram, discord, whatsapp, web_chat
+  enabled     Boolean  @default(true)
+  config      Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, channelType])
+  @@map("bot_channels")
+}
+
+// ─── Workflows (Visual Builder) ──────────────────────────────
+
+model Workflow {
+  id        String   @id @default(uuid())
+  botId     String
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bot   Bot            @relation(fields: [botId], references: [id], onDelete: Cascade)
+  nodes WorkflowNode[]
+  edges WorkflowEdge[]
+
+  @@map("workflows")
+}
+
+model WorkflowNode {
+  id         String   @id @default(uuid())
+  workflowId String
+  type       String   // message_input, condition, database_query, http_request, function, state, scheduler, etc.
+  label      String   @default("")
+  positionX  Float    @default(0)
+  positionY  Float    @default(0)
+  data       Json     @default("{}")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workflow    Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  outEdges   WorkflowEdge[]  @relation("EdgeSource")
+  inEdges    WorkflowEdge[]  @relation("EdgeTarget")
+
+  @@map("workflow_nodes")
+}
+
+model WorkflowEdge {
+  id           String  @id @default(uuid())
+  workflowId   String
+  sourceId     String
+  targetId     String
+  sourceHandle String?
+  targetHandle String?
+  label        String?
+
+  workflow Workflow     @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  source   WorkflowNode @relation("EdgeSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target   WorkflowNode @relation("EdgeTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@map("workflow_edges")
+}
+
+// ─── API Routes ──────────────────────────────────────────────
+
+model ApiRoute {
+  id         String   @id @default(uuid())
+  botId      String
+  method     String   // GET, POST, PUT, DELETE, PATCH
+  path       String
+  handler    String   @default("") // code or workflow reference
+  validation Json     @default("{}")
+  auth       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, method, path])
+  @@map("api_routes")
+}
+
+// ─── Environments & Deployments ──────────────────────────────
+
+model Environment {
+  id          String   @id @default(uuid())
+  projectId   String
+  type        String   @default("local") // local, staging, production
+  domain      String?
+  databaseUrl String?
+  status      String   @default("stopped") // running, stopped, deploying, error
+  cpuLimit    String   @default("0.5")
+  memoryLimit String   @default("512Mi")
+  maxReplicas Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deployments Deployment[]
+
+  @@unique([projectId, type])
+  @@map("environments")
+}
+
+model Deployment {
+  id            String   @id @default(uuid())
+  environmentId String
+  version       String
+  status        String   @default("pending") // pending, building, deploying, live, failed, rolled_back
+  commitHash    String?
+  imageTag      String?
+  logs          Json     @default("[]")
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+
+  environment Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  @@map("deployments")
+}
+
+// ─── Billing ─────────────────────────────────────────────────
+
+model Subscription {
+  id                   String   @id @default(uuid())
+  userId               String   @unique
+  tier                 String   @default("free") // free, starter, pro, enterprise
+  status               String   @default("active") // active, canceled, past_due, trialing
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodStart   DateTime @default(now())
+  currentPeriodEnd     DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model UsageRecord {
+  id              String   @id @default(uuid())
+  userId          String
+  period          String   // YYYY-MM format
+  apiRequests     Int      @default(0)
+  dbStorageMb     Float    @default(0)
+  bandwidthMb     Float    @default(0)
+  cpuTimeSeconds  Float    @default(0)
+  botsCount       Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, period])
+  @@map("usage_records")
+}
+
+// ─── Audit Log ───────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  resource  String
+  resourceId String?
+  details   Json     @default("{}")
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([resource, resourceId])
+  @@map("audit_logs")
+}
